@@ -4,21 +4,34 @@ const test = require('tap').test;
 const sandbox = require('@log4js-node/sandboxed-module');
 const appenderModule = require('../../lib');
 
-function setupLogging(options, err) {
+function setupLogging(appenderConfig, options, err) {
+  if (options instanceof Error) {
+    err = options;
+    options = {};
+  }
+  options = options || {};
+
   const fakeSlack = {
     messages: [],
     chat: {
       postMessage: function (data, callback) {
-        fakeSlack.messages.push(data);
-        callback(err, { status: 'sent' });
+        const send = () => {
+          fakeSlack.messages.push(data);
+          callback(err, { status: 'sent' });
+        };
+        if (options.delay) {
+          setTimeout(send, options.delay);
+        } else {
+          send();
+        }
       }
     }
   };
 
   const fakeLayouts = {
-    layout: function (type, config) {
+    layout: function (type, layoutConfig) {
       this.type = type;
-      this.config = config;
+      this.config = layoutConfig;
       return evt => evt.data[0];
     },
     basicLayout: evt => evt.data[0]
@@ -35,7 +48,7 @@ function setupLogging(options, err) {
     }
   };
 
-  options.type = '@log4js-node/slack';
+  appenderConfig.type = '@log4js-node/slack';
   const appender = sandbox.require('../../lib', {
     requires: {
       slack: fakeSlack
@@ -43,10 +56,11 @@ function setupLogging(options, err) {
     globals: {
       console: fakeConsole
     }
-  }).configure(options, fakeLayouts);
+  }).configure(appenderConfig, fakeLayouts);
 
   return {
     logger: msg => appender({ data: [msg] }),
+    appender: appender,
     slack: fakeSlack,
     layouts: fakeLayouts,
     console: fakeConsole
@@ -136,6 +150,38 @@ test('log4js slackAppender', (batch) => {
     t.equal(setup.console.errors[0].msg, 'log4js:slack - Error sending log to slack: ');
     t.match(setup.console.errors[0].value, /aargh/);
     t.end();
+  });
+
+  batch.test('should wait sending when shutdown', (t) => {
+    const setup = setupLogging({
+      token: 'TOKEN',
+      channel_id: '#CHANNEL',
+      username: 'USERNAME',
+      icon_url: 'ICON_URL',
+    }, {
+      delay: 500,
+    });
+    setup.logger('message');
+    setup.appender.shutdown(() => {
+      t.equal(setup.slack.messages.length, 1, 'should be one messages');
+      t.end();
+    });
+  });
+
+  batch.test('should not wait too long when shutdown', (t) => {
+    const setup = setupLogging({
+      token: 'TOKEN',
+      channel_id: '#CHANNEL',
+      username: 'USERNAME',
+      icon_url: 'ICON_URL',
+    }, {
+      delay: 1200,
+    });
+    setup.logger('message');
+    setup.appender.shutdown(() => {
+      t.equal(setup.slack.messages.length, 0, 'should be no messages');
+      t.end();
+    });
   });
 
   batch.end();
